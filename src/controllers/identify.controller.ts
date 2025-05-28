@@ -1,7 +1,9 @@
+import { db } from "../utils/db";
+
 export const identifyConroller = async (req : any, res : any) => {
   const { email, phoneNumber } = req.body;
 
-  const matchedContacts = await prisma.contact.findMany({
+  const matchedContacts = await db.contact.findMany({
     where: {
       OR: [
         { email: email ?? undefined },
@@ -11,10 +13,10 @@ export const identifyConroller = async (req : any, res : any) => {
     orderBy: { createdAt: 'asc' }
   });
 
-  let primary = matchedContacts.find(c => c.linkPrecedence === 'primary') || matchedContacts[0];
+  let primary = matchedContacts.find((c: { linkPrecedence: string; }) => c.linkPrecedence === 'primary') || matchedContacts[0];
 
   if (!matchedContacts.length) {
-    const newContact = await prisma.contact.create({
+    const newContact = await db.contact.create({
       data: {
         email,
         phoneNumber,
@@ -32,15 +34,15 @@ export const identifyConroller = async (req : any, res : any) => {
     });
   }
 
-  const knownEmails = new Set(matchedContacts.map(c => c.email).filter(Boolean));
-  const knownPhones = new Set(matchedContacts.map(c => c.phoneNumber).filter(Boolean));
+  const knownEmails = new Set(matchedContacts.map((c: { email: any; }) => c.email).filter(Boolean));
+  const knownPhones = new Set(matchedContacts.map((c: { phoneNumber: any; }) => c.phoneNumber).filter(Boolean));
 
   let shouldCreateNew = false;
   if (email && !knownEmails.has(email)) shouldCreateNew = true;
   if (phoneNumber && !knownPhones.has(phoneNumber)) shouldCreateNew = true;
 
   if (shouldCreateNew) {
-    await prisma.contact.create({
+    await db.contact.create({
       data: {
         email,
         phoneNumber,
@@ -50,7 +52,7 @@ export const identifyConroller = async (req : any, res : any) => {
     });
   }
 
-  const allLinkedContacts = await prisma.contact.findMany({
+  const allLinkedContacts = await db.contact.findMany({
     where: {
       OR: [
         { id: primary.id },
@@ -60,9 +62,9 @@ export const identifyConroller = async (req : any, res : any) => {
     orderBy: { createdAt: 'asc' }
   });
 
-  const emails = Array.from(new Set(allLinkedContacts.map(c => c.email).filter(Boolean)));
-  const phoneNumbers = Array.from(new Set(allLinkedContacts.map(c => c.phoneNumber).filter(Boolean)));
-  const secondaryIds = allLinkedContacts.filter(c => c.linkPrecedence === 'secondary').map(c => c.id);
+  const emails = Array.from(new Set(allLinkedContacts.map((c: { email: any; }) => c.email).filter(Boolean)));
+  const phoneNumbers = Array.from(new Set(allLinkedContacts.map((c: { phoneNumber: any; }) => c.phoneNumber).filter(Boolean)));
+  const secondaryIds = allLinkedContacts.filter((c: { linkPrecedence: string; }) => c.linkPrecedence === 'secondary').map((c: { id: any; }) => c.id);
 
   res.status(200).json({
     contact: {
