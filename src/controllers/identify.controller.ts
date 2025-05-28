@@ -1,77 +1,114 @@
 import { db } from "../utils/db";
 
-export const identifyConroller = async (req : any, res : any) => {
+export const identifyConroller = async (req: any, res: any) => {
   const { email, phoneNumber } = req.body;
 
-  const matchedContacts = await db.contact.findMany({
+  if (!email && !phoneNumber) {
+    return res.status(400).json({ error: "Email or phoneNumber required." });
+  }
+
+  const orConditions = [];
+  if (email) orConditions.push({ email });
+  if (phoneNumber) orConditions.push({ phoneNumber });
+
+  const initialMatches = await db.contact.findMany({
     where: {
-      OR: [
-        { email: email ?? undefined },
-        { phoneNumber: phoneNumber ?? undefined }
-      ]
+      OR: orConditions,
     },
-    orderBy: { createdAt: 'asc' }
+    orderBy: { createdAt: "asc" },
   });
 
-  let primary = matchedContacts.find((c: { linkPrecedence: string; }) => c.linkPrecedence === 'primary') || matchedContacts[0];
-
-  if (!matchedContacts.length) {
+  if (initialMatches.length === 0) {
     const newContact = await db.contact.create({
-      data: {
-        email,
-        phoneNumber,
-        linkPrecedence: 'primary'
-      }
+      data: { email, phoneNumber, linkPrecedence: "primary" },
     });
-
     return res.status(200).json({
       contact: {
         primaryContatctId: newContact.id,
         emails: [newContact.email].filter(Boolean),
         phoneNumbers: [newContact.phoneNumber].filter(Boolean),
-        secondaryContactIds: []
-      }
+        secondaryContactIds: [],
+      },
     });
   }
 
-  const knownEmails = new Set(matchedContacts.map((c: { email: any; }) => c.email).filter(Boolean));
-  const knownPhones = new Set(matchedContacts.map((c: { phoneNumber: any; }) => c.phoneNumber).filter(Boolean));
+  const visited = new Set<number>();
+  const allContacts: any[] = [];
+  const queue: number[] = [];
 
-  let shouldCreateNew = false;
-  if (email && !knownEmails.has(email)) shouldCreateNew = true;
-  if (phoneNumber && !knownPhones.has(phoneNumber)) shouldCreateNew = true;
+  for (const c of initialMatches) {
+    if (!visited.has(c.id)) queue.push(c.id);
+  }
 
-  if (shouldCreateNew) {
+  while (queue.length > 0) {
+    const currentId = queue.pop()!;
+    if (visited.has(currentId)) continue;
+    visited.add(currentId);
+
+    const relatedContacts = await db.contact.findMany({
+      where: {
+        OR: [
+          { id: currentId },
+          { linkedId: currentId },
+          { id: (await db.contact.findUnique({ where: { id: currentId } }))?.linkedId || -1 }
+        ]
+      },
+    });
+
+    for (const c of relatedContacts) {
+      if (!visited.has(c.id)) queue.push(c.id);
+      allContacts.push(c);
+    }
+  }
+
+  const uniqueContacts = Array.from(
+    new Map(allContacts.map(c => [c.id, c])).values()
+  );
+
+  uniqueContacts.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const primary = uniqueContacts.find(c => c.linkPrecedence === "primary")!;
+  const primaryId = primary.id;
+
+  for (const c of uniqueContacts) {
+    if (c.linkPrecedence === "primary" && c.id !== primaryId) {
+      await db.contact.update({
+        where: { id: c.id },
+        data: {
+          linkPrecedence: "secondary",
+          linkedId: primaryId,
+        },
+      });
+    }
+  }
+  const emails = new Set(uniqueContacts.map(c => c.email).filter(Boolean));
+  const phones = new Set(uniqueContacts.map(c => c.phoneNumber).filter(Boolean));
+
+  if ((email && !emails.has(email)) || (phoneNumber && !phones.has(phoneNumber))) {
     await db.contact.create({
       data: {
         email,
         phoneNumber,
-        linkPrecedence: 'secondary',
-        linkedId: primary.id
-      }
+        linkPrecedence: "secondary",
+        linkedId: primaryId,
+      },
     });
   }
 
-  const allLinkedContacts = await db.contact.findMany({
+  const finalContacts = await db.contact.findMany({
     where: {
-      OR: [
-        { id: primary.id },
-        { linkedId: primary.id }
-      ]
+      OR: [{ id: primaryId }, { linkedId: primaryId }],
     },
-    orderBy: { createdAt: 'asc' }
+    orderBy: { createdAt: "asc" },
   });
 
-  const emails = Array.from(new Set(allLinkedContacts.map((c: { email: any; }) => c.email).filter(Boolean)));
-  const phoneNumbers = Array.from(new Set(allLinkedContacts.map((c: { phoneNumber: any; }) => c.phoneNumber).filter(Boolean)));
-  const secondaryIds = allLinkedContacts.filter((c: { linkPrecedence: string; }) => c.linkPrecedence === 'secondary').map((c: { id: any; }) => c.id);
-
-  res.status(200).json({
+  return res.status(200).json({
     contact: {
-      primaryContatctId: primary.id,
-      emails,
-      phoneNumbers,
-      secondaryContactIds: secondaryIds
-    }
+      primaryContatctId: primaryId,
+      emails: Array.from(new Set(finalContacts.map(c => c.email).filter(Boolean))),
+      phoneNumbers: Array.from(new Set(finalContacts.map(c => c.phoneNumber).filter(Boolean))),
+      secondaryContactIds: finalContacts
+        .filter(c => c.linkPrecedence === "secondary")
+        .map(c => c.id),
+    },
   });
-}
+};
